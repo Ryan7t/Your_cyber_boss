@@ -17,7 +17,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
+        include:
+          - os: windows-latest
+            arch: x64
+            artifact: Windows-x64
+          - os: macos-13
+            arch: x64
+            artifact: macOS-x64
+          - os: macos-14
+            arch: arm64
+            artifact: macOS-arm64
+          - os: ubuntu-latest
+            arch: x64
+            artifact: Linux-x64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            artifact: Linux-arm64
 
     steps:
       - name: Checkout
@@ -67,7 +82,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: bossagent-${{ runner.os }}
+          name: bossagent-${{ matrix.artifact }}
           path: electron/dist/**
 
   release:
@@ -93,7 +108,4 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            bossagent-Windows.zip
-            bossagent-macOS.zip
-            bossagent-Linux.zip
+          files: bossagent-*.zip
