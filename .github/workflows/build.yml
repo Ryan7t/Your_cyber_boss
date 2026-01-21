@@ -62,7 +62,7 @@ jobs:
 
       - name: Build Electron
         working-directory: electron
-        run: npm run dist
+        run: npm run dist -- --publish=never
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

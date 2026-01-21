@@ -26,6 +26,12 @@
     ],
     "directories": {
       "buildResources": "build"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Utility"
     }
   }
 }
