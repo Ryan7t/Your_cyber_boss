@@ -4,8 +4,9 @@ BossAgent 核心类
 """
 import sys
 import json
+import re
 import threading
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from colorama import Fore, Style
 
 from config import settings
@@ -20,7 +21,7 @@ from ui import TerminalUI
 class BossAgent:
     """赛博司马特 - AI 老板 Agent"""
     
-    def __init__(self):
+    def __init__(self, ui: TerminalUI = None):
         # 初始化配置
         self.name = settings.agent_name
         
@@ -36,7 +37,7 @@ class BossAgent:
             context_intro_file=settings.context_intro_file
         )
         self.doc_loader = DocxLoader(settings.documents_dir)
-        self.ui = TerminalUI(self.name)
+        self.ui = ui or TerminalUI(self.name)
         
         # 初始化任务调度器
         self.scheduler = TaskScheduler(settings.task_state_file)
@@ -138,6 +139,9 @@ class BossAgent:
             full_response = self._stream_response(messages)
         else:
             full_response = assistant_message.content or ""
+            full_response, dsml_used = self._apply_dsml_tool_calls(full_response)
+            if dsml_used:
+                tool_used = True
             if full_response:
                 self.ui.print_stream(full_response)
             self.ui.print_newline()
@@ -237,6 +241,40 @@ class BossAgent:
             })
         return tool_messages
 
+    def _apply_dsml_tool_calls(self, content: str) -> Tuple[str, bool]:
+        """解析并执行 DSML 工具调用内容，同时清理可见输出"""
+        if not content:
+            return content, False
+        pattern = re.compile(r"<[\|｜]DSML[\|｜]invoke\s+name=\"([^\"]+)\"[^>]*>(.*?)</[\|｜]DSML[\|｜]invoke>", re.S)
+        matches = pattern.findall(content)
+        if not matches:
+            return content, False
+
+        tool_used = False
+        for name, body in matches:
+            args_text = body.strip()
+            if args_text:
+                try:
+                    args = json.loads(args_text)
+                except json.JSONDecodeError:
+                    args = {}
+            else:
+                args = {}
+            handler = self.tool_handlers.get(name)
+            if handler:
+                try:
+                    if isinstance(args, dict):
+                        handler(**args)
+                    else:
+                        handler(args)
+                    tool_used = True
+                except Exception:
+                    pass
+
+        cleaned = re.sub(r"<[\|｜]DSML[\|｜]function_calls>.*?</[\|｜]DSML[\|｜]function_calls>", "", content, flags=re.S)
+        cleaned = re.sub(r"</?[\|｜]DSML[\|｜][^>]*>", "", cleaned)
+        return cleaned.strip(), tool_used
+
     def _stream_response(self, messages: List[Dict]) -> str:
         """流式输出 LLM 回复并返回完整内容"""
         full_response = ""
@@ -259,6 +297,8 @@ class BossAgent:
             init_input = "（系统自动触发：用户已上线。当前没有任何历史对话记录，这是全新的一天。请直接询问用户今天的工作计划：写自然选题还是做商单？不要追问昨天的任务，因为没有昨天的记录。）"
             response = self.generate_response(init_input)
             self.memory.add("（用户上线）", response)
+            return response
+        return ""
     
     def handle_proactive_followup(self):
         """处理主动追问（空输入或定时触发）"""
@@ -266,6 +306,7 @@ class BossAgent:
         proactive_input = f"（系统自动触发：用户请求你主动追问。当前时间是 {time_info['time_str']} {time_info['weekday']}，现在是{time_info['time_period']}。请根据历史对话上下文和当前时间，主动询问用户的工作进度。比如：如果之前在讨论选题，就问选题想好了没；如果在改稿，就问改得怎么样了；如果时间过了很久还没进展，就催一催。用老板的语气说话。）"
         response = self.generate_response(proactive_input)
         self.memory.add("（主动追问）", response)
+        return response
     
     def handle_auto_followup(self):
         """处理定时自动触发的追问"""
@@ -273,11 +314,13 @@ class BossAgent:
         auto_input = f"（系统自动触发：任务截止时间已到。当前时间是 {time_info['time_str']} {time_info['weekday']}，现在是{time_info['time_period']}。之前你给用户布置了任务并设定了截止时间，现在时间到了。请根据历史对话上下文，催促用户汇报任务进度。如果用户还没完成，问他卡在哪里了需要什么帮助。用老板的语气说话，直接但不粗暴。）"
         response = self.generate_response(auto_input)
         self.memory.add("（定时催促）", response)
+        return response
     
     def handle_user_input(self, user_input: str):
         """处理正常用户输入"""
         response = self.generate_response(user_input)
         self.memory.add(user_input, response)
+        return response
     
     def run(self):
         """主循环"""
@@ -319,6 +362,10 @@ class BossAgent:
         finally:
             # 确保调度器正确停止
             self.scheduler.stop()
+
+    def shutdown(self):
+        """停止后台资源（用于非交互模式）"""
+        self.scheduler.stop()
     
     def _get_input_with_timeout(self) -> str:
         """

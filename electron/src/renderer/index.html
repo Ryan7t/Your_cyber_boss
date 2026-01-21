@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BossAgent</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">BossAgent 桌面版</p>
+          <h1>赛博司马特控制台</h1>
+        </div>
+        <div class="status" id="status">正在连接...</div>
+      </header>
+
+      <main class="layout">
+        <section class="chat">
+          <div class="chat-header">
+            <div class="chat-title">
+              <h2>对话记录</h2>
+              <div class="timer-inline">
+                <span class="timer-status" id="timerStatus">未设置</span>
+                <span class="timer-remaining" id="timerRemaining">--:--</span>
+                <div class="timer-bar">
+                  <div class="timer-fill" id="timerFill"></div>
+                </div>
+                <span class="timer-meta" id="timerMeta"></span>
+              </div>
+            </div>
+            <div class="chat-actions">
+              <button class="ghost" id="nudgeBtn">主动催促</button>
+              <button class="ghost" id="clearHistory">清空对话</button>
+            </div>
+          </div>
+          <div class="messages" id="messages"></div>
+          <div class="composer">
+            <textarea id="messageInput" rows="4" placeholder="输入或粘贴内容..."></textarea>
+            <button id="sendBtn">发送</button>
+          </div>
+        </section>
+
+        <aside class="panel">
+          <div class="panel-section">
+            <h3>模型配置</h3>
+            <label>
+              模型
+              <input id="modelInput" type="text" placeholder="模型名称" />
+            </label>
+            <label>
+              接口地址
+              <input id="baseUrlInput" type="text" placeholder="https://..." />
+            </label>
+            <label>
+              API 密钥
+              <input id="apiKeyInput" type="password" placeholder="sk-..." />
+            </label>
+          </div>
+
+          <div class="panel-section">
+            <h3>文案目录</h3>
+            <label>
+              目录
+              <div class="row">
+                <input id="docsDirInput" type="text" placeholder="选择文件夹" />
+                <button class="ghost" id="pickDirBtn">选择</button>
+              </div>
+            </label>
+            <div class="doc-list" id="docList"></div>
+          </div>
+
+          <div class="panel-section">
+            <button id="saveConfigBtn">保存配置</button>
+          </div>
+        </aside>
+      </main>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>

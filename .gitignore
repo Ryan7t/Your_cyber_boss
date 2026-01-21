@@ -19,3 +19,14 @@ conversation_history.json
 .vscode/
 *.swp
 data/task_state.json
+
+# Electron
+electron/node_modules/
+electron/dist/
+electron/build/
+electron/backend/*
+!electron/backend/.gitkeep
+
+# PyInstaller
+dist/
+build/

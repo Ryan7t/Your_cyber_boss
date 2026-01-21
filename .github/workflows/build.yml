@@ -1,0 +1,66 @@
+name: build-electron
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend deps
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Build backend (Windows)
+        if: runner.os == 'Windows'
+        run: pyinstaller --onefile --name backend --add-data "prompts;prompts" server.py
+
+      - name: Build backend (Unix)
+        if: runner.os != 'Windows'
+        run: pyinstaller --onefile --name backend --add-data "prompts:prompts" server.py
+
+      - name: Copy backend (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Copy-Item -Force dist\backend.exe electron\backend\backend.exe
+
+      - name: Copy backend (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cp dist/backend electron/backend/backend
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: electron/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: electron
+        run: npm ci
+
+      - name: Build Electron
+        working-directory: electron
+        run: npm run dist
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bossagent-${{ runner.os }}
+          path: electron/dist/**

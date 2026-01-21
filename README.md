@@ -23,3 +23,25 @@ python main.py
 ├── ui/              # 用户界面
 └── data/            # 数据文件
 ```
+
+## Electron 桌面版（方案B）
+
+开发模式（需要本机有 Python）：
+```bash
+cd electron
+npm install
+npm run dev
+```
+
+打包后端（每个系统分别打包）：
+```bash
+pip install pyinstaller
+./scripts/build_backend.ps1   # Windows
+./scripts/build_backend.sh    # macOS/Linux
+```
+
+将生成的 `dist/backend(.exe)` 复制到 `electron/backend/`，然后打包 Electron：
+```bash
+cd electron
+npm run dist
+```

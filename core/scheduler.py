@@ -145,6 +145,24 @@ class TaskScheduler:
                 return None
             remaining = (self.deadline - datetime.now()).total_seconds()
             return max(0, remaining)
+
+    def get_status(self) -> dict:
+        """获取调度器状态信息"""
+        with self._lock:
+            if self.deadline is None:
+                return {
+                    "active": False,
+                    "deadline": None,
+                    "interval_minutes": None,
+                    "remaining_seconds": None
+                }
+            remaining = (self.deadline - datetime.now()).total_seconds()
+            return {
+                "active": True,
+                "deadline": self.deadline.isoformat(),
+                "interval_minutes": self.interval_minutes,
+                "remaining_seconds": max(0, remaining)
+            }
     
     def start(self, callback: Callable):
         """

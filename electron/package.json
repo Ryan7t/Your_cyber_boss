@@ -1,0 +1,31 @@
+{
+  "name": "boss-agent-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/main.js",
+  "scripts": {
+    "dev": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^30.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.boss.agent",
+    "productName": "BossAgent",
+    "files": [
+      "src/**"
+    ],
+    "extraResources": [
+      {
+        "from": "backend",
+        "to": "backend"
+      }
+    ],
+    "directories": {
+      "buildResources": "build"
+    }
+  }
+}
