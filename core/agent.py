@@ -193,7 +193,17 @@ class BossAgent:
             用户输入字符串，如果是定时触发则返回 None
         """
         import time
-        import msvcrt
+        import sys
+        
+        # 跨平台输入缓冲区检测
+        if sys.platform == 'win32':
+            import msvcrt
+            def kbhit():
+                return msvcrt.kbhit()
+        else:
+            import select
+            def kbhit():
+                return select.select([sys.stdin], [], [], 0)[0] != []
         
         # 先打印输入提示
         print(f"\n{Fore.BLUE}我的回复 > {Style.RESET_ALL}", end="", flush=True)
@@ -212,7 +222,7 @@ class BossAgent:
                 time.sleep(0.05)  # 50ms 足够检测粘贴操作
                 
                 # 持续读取缓冲区中的剩余行
-                while msvcrt.kbhit():
+                while kbhit():
                     try:
                         line = input()
                         lines.append(line)

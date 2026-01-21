@@ -18,3 +18,4 @@ conversation_history.json
 .idea/
 .vscode/
 *.swp
+data/task_state.json

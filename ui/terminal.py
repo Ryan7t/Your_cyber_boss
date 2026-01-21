@@ -4,10 +4,18 @@
 """
 import sys
 import time
-import msvcrt
 from colorama import Fore, Style, init
 from pyfiglet import Figlet
 
+# 跨平台输入缓冲区检测
+if sys.platform == 'win32':
+    import msvcrt
+    def kbhit():
+        return msvcrt.kbhit()
+else:
+    import select
+    def kbhit():
+        return select.select([sys.stdin], [], [], 0)[0] != []
 
 # 初始化 colorama
 init()
@@ -65,7 +73,7 @@ class TerminalUI:
         time.sleep(0.05)  # 50ms 足够检测粘贴操作
         
         # 持续读取缓冲区中的剩余行
-        while msvcrt.kbhit():
+        while kbhit():
             try:
                 # 读取一行
                 line = input()
