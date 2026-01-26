@@ -7,6 +7,8 @@ import json
 import re
 import threading
 import traceback
+import httpx
+import openai
 from typing import List, Dict, Any, Tuple, Optional, Callable, TYPE_CHECKING
 from colorama import Fore, Style
 
@@ -18,6 +20,25 @@ from prompts import PromptLoader
 from context import DocxLoader
 if TYPE_CHECKING:
     from ui.terminal import TerminalUI
+
+
+def _is_timeout_error(err: BaseException) -> bool:
+    """判断是否为请求超时错误"""
+    if isinstance(err, httpx.TimeoutException):
+        return True
+    if isinstance(err, (openai.APITimeoutError, openai.Timeout)):
+        return True
+    seen = set()
+    current = err
+    while current and current not in seen:
+        seen.add(current)
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        if isinstance(current, httpx.TimeoutException):
+            return True
+        if isinstance(current, (openai.APITimeoutError, openai.Timeout)):
+            return True
+    message = str(err).lower()
+    return "timeout" in message or "timed out" in message or "readtimeout" in message or "etimedout" in message
 
 
 class BossAgent:
@@ -32,7 +53,8 @@ class BossAgent:
         self.llm = LLMClient(
             api_key=settings.openai_api_key,
             base_url=settings.openai_base_url,
-            model=settings.llm_model
+            model=settings.llm_model,
+            timeout_s=settings.llm_timeout_s
         )
         self.prompt_loader = PromptLoader(
             system_prompt_file=settings.system_prompt_file,
@@ -113,7 +135,7 @@ class BossAgent:
         user_input: str,
         event_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         message_id: Optional[str] = None
-    ) -> Tuple[str, List[Dict]]:
+    ) -> Tuple[str, List[Dict], bool]:
         """
         生成回复并流式打印
         
@@ -121,7 +143,7 @@ class BossAgent:
             user_input: 用户输入
             
         Returns:
-            完整的回复内容 和 本轮对话的完整消息列表（用于保存到 Memory）
+            完整的回复内容、本轮对话消息列表、是否写入历史记录
         """
         messages = self.build_messages(user_input)
         self.ui.print_agent_prefix()
@@ -137,7 +159,7 @@ class BossAgent:
                 {"role": "user", "content": user_input},
                 {"role": "assistant", "content": error_text}
             ]
-            return error_text, conversation_messages
+            return error_text, conversation_messages, False
 
         try:
             full_response, tool_calls = self._stream_with_tools(
@@ -145,20 +167,26 @@ class BossAgent:
                 event_callback=event_callback,
                 message_id=message_id
             )
-        except Exception:
+        except Exception as err:
             error_trace = traceback.format_exc()
+            is_timeout = _is_timeout_error(err)
+            error_text = "请求超时，点击“重试”可再次生成。" if is_timeout else error_trace
             if event_callback:
-                event_callback({"type": "error", "content": error_trace, "message_id": message_id})
+                payload = {"type": "error", "content": error_text, "message_id": message_id}
+                if is_timeout:
+                    payload["kind"] = "timeout"
+                event_callback(payload)
             self.ui.print_error(f"\n{error_trace}")
             self.ui.print_newline()
             # 返回错误跟踪和简单的对话消息
             conversation_messages = [
                 {"role": "user", "content": user_input},
-                {"role": "assistant", "content": error_trace}
+                {"role": "assistant", "content": error_text}
             ]
-            return error_trace, conversation_messages
+            return error_text, conversation_messages, False
 
         tool_used = False
+        error_occurred = False
         # 收集本轮对话的完整消息（阶段二：保存完整消息格式）
         conversation_messages = [
             {"role": "user", "content": user_input}
@@ -181,7 +209,13 @@ class BossAgent:
             messages.extend(tool_messages)
 
             # 获取第二轮回复
-            second_response = self._stream_response(messages, event_callback=event_callback, message_id=message_id)
+            second_response, second_error = self._stream_response(
+                messages,
+                event_callback=event_callback,
+                message_id=message_id
+            )
+            if second_error:
+                error_occurred = True
             cleaned_second, dsml_used, dsml_calls, dsml_tool_messages = self._handle_dsml_tool_calls(
                 second_response,
                 event_callback=event_callback,
@@ -227,8 +261,10 @@ class BossAgent:
             if dsml_tool_messages:
                 conversation_messages.extend(dsml_tool_messages)
 
-        self._process_deadline(full_response, tool_used=tool_used)
-        return full_response, conversation_messages
+        should_save = not error_occurred
+        if should_save:
+            self._process_deadline(full_response, tool_used=tool_used)
+        return full_response, conversation_messages, should_save
 
     def _process_deadline(self, response: str, tool_used: bool):
         """从回复中解析截止时间并设置调度器（工具调用失败时的兜底）"""
@@ -500,7 +536,7 @@ class BossAgent:
         messages: List[Dict],
         event_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         message_id: Optional[str] = None
-    ) -> str:
+    ) -> Tuple[str, bool]:
         """流式输出 LLM 回复并返回完整内容"""
         full_response = ""
         try:
@@ -509,14 +545,21 @@ class BossAgent:
                     event_callback({"type": "chunk", "content": chunk, "message_id": message_id})
                 self.ui.print_stream(chunk)
                 full_response += chunk
-        except Exception:
+        except Exception as err:
             error_trace = traceback.format_exc()
+            is_timeout = _is_timeout_error(err)
+            error_text = "请求超时，点击“重试”可再次生成。" if is_timeout else error_trace
             if event_callback:
-                event_callback({"type": "error", "content": error_trace, "message_id": message_id})
+                payload = {"type": "error", "content": error_text, "message_id": message_id}
+                if is_timeout:
+                    payload["kind"] = "timeout"
+                event_callback(payload)
             self.ui.print_error(f"\n{error_trace}")
-            full_response = error_trace
+            full_response = error_text
+            self.ui.print_newline()
+            return full_response, True
         self.ui.print_newline()
-        return full_response
+        return full_response, False
     
     def _on_deadline_reached(self):
         """截止时间到达时的回调"""
@@ -530,8 +573,13 @@ class BossAgent:
         """处理首次启动的开场白"""
         if self.memory.is_empty():
             init_input = "（系统自动触发：用户已上线。当前没有任何历史对话记录，这是全新的一天。直接开门见山问今天的工作计划：写自然选题还是做商单？语气要直接有力，不给犹豫空间，像老板布置任务一样，不要客气。）"
-            response, conversation_messages = self.generate_response(init_input, event_callback=event_callback, message_id=message_id)
-            self.memory.add(conversation_messages)
+            response, conversation_messages, should_save = self.generate_response(
+                init_input,
+                event_callback=event_callback,
+                message_id=message_id
+            )
+            if should_save:
+                self.memory.add(conversation_messages)
             return response
         return ""
     
@@ -543,8 +591,13 @@ class BossAgent:
         """处理主动追问（空输入或定时触发）"""
         time_info = self.prompt_loader.get_time_info()
         proactive_input = f"（系统自动触发：用户请求你主动追问。当前时间是 {time_info['time_str']} {time_info['weekday']}，现在是{time_info['time_period']}。请根据历史对话上下文和当前时间，用严厉的语气催促用户汇报工作进度。如果之前在讨论选题，就直接质问选题想好了没有；如果在改稿，就追问改得怎么样了；如果时间过了很久还没进展，就骂他拖延、摸鱼。用老板训斥员工的语气说话，要凶狠一点，别客气，让他感受到压力。）"
-        response, conversation_messages = self.generate_response(proactive_input, event_callback=event_callback, message_id=message_id)
-        self.memory.add(conversation_messages)
+        response, conversation_messages, should_save = self.generate_response(
+            proactive_input,
+            event_callback=event_callback,
+            message_id=message_id
+        )
+        if should_save:
+            self.memory.add(conversation_messages)
         return response
     
     def handle_auto_followup(
@@ -555,8 +608,13 @@ class BossAgent:
         """处理定时自动触发的追问"""
         time_info = self.prompt_loader.get_time_info()
         auto_input = f"（系统自动触发：任务截止时间已到，用户还没有任何回复。当前时间是 {time_info['time_str']} {time_info['weekday']}，现在是{time_info['time_period']}。之前你给用户布置了任务并设定了截止时间，现在时间到了他还没交付成果。请用非常严厉凶狠的语气骂他、训斥他。像老板发现员工拖延任务时那样愤怒地质问：时间到了东西呢？在干什么？是不是又在摸鱼？要直接骂出来，让他感受到你的怒火和不满。如果他还没完成，除了骂他，还要追问到底卡在哪里了，是能力不行还是态度有问题。语气要凶，要狠，要让他意识到拖延的严重性。）"
-        response, conversation_messages = self.generate_response(auto_input, event_callback=event_callback, message_id=message_id)
-        self.memory.add(conversation_messages)
+        response, conversation_messages, should_save = self.generate_response(
+            auto_input,
+            event_callback=event_callback,
+            message_id=message_id
+        )
+        if should_save:
+            self.memory.add(conversation_messages)
         return response
     
     def handle_user_input(
@@ -566,8 +624,13 @@ class BossAgent:
         message_id: Optional[str] = None
     ):
         """处理正常用户输入"""
-        response, conversation_messages = self.generate_response(user_input, event_callback=event_callback, message_id=message_id)
-        self.memory.add(conversation_messages)
+        response, conversation_messages, should_save = self.generate_response(
+            user_input,
+            event_callback=event_callback,
+            message_id=message_id
+        )
+        if should_save:
+            self.memory.add(conversation_messages)
         return response
     
     def run(self):

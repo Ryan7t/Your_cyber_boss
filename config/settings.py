@@ -20,7 +20,12 @@ class Settings:
         inferred_base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.base_dir = base_dir_override or getattr(sys, "_MEIPASS", inferred_base_dir)
         data_dir_override = os.getenv("BOSS_DATA_DIR")
-        self.data_dir = data_dir_override or os.path.join(self.base_dir, "data")
+        if data_dir_override:
+            self.data_dir = data_dir_override
+        elif hasattr(sys, "_MEIPASS"):
+            self.data_dir = self._default_user_data_dir()
+        else:
+            self.data_dir = os.path.join(self.base_dir, "data")
         self.prompts_dir = os.path.join(self.base_dir, "prompts", "templates")
         self.prompt_overrides_dir = os.path.join(self.data_dir, "prompts")
         self.runtime_config_file = os.path.join(self.data_dir, "runtime_config.json")
@@ -29,6 +34,7 @@ class Settings:
         self.llm_model = os.getenv("LLM_MODEL", "deepseek-ai/DeepSeek-V3.2")
         self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
         self.openai_base_url = os.getenv("OPENAI_BASE_URL", "https://api.siliconflow.cn/v1")
+        self.llm_timeout_s = self._load_float_env("BOSS_LLM_TIMEOUT_S", 120.0)
 
         # Agent 配置
         self.agent_name = "CyberBoss"
@@ -51,6 +57,17 @@ class Settings:
         if os.path.exists(override_path):
             return override_path
         return os.path.join(self.prompts_dir, filename)
+
+    def _default_user_data_dir(self) -> str:
+        """获取跨平台用户数据目录（用于打包运行时）"""
+        app_name = os.getenv("BOSS_APP_NAME", "BossAgent")
+        if sys.platform == "win32":
+            base = os.getenv("APPDATA") or os.getenv("LOCALAPPDATA") or os.path.expanduser("~")
+            return os.path.join(base, app_name)
+        if sys.platform == "darwin":
+            return os.path.join(os.path.expanduser("~/Library/Application Support"), app_name)
+        base = os.getenv("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+        return os.path.join(base, app_name)
     
     def _load_env(self):
         """加载环境变量"""
@@ -60,6 +77,16 @@ class Settings:
         )
         if os.path.exists(env_path):
             load_dotenv(dotenv_path=env_path, override=True)
+
+    def _load_float_env(self, key: str, default: float) -> float:
+        """安全解析浮点环境变量"""
+        raw = os.getenv(key)
+        if raw is None:
+            return default
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return default
 
     def _load_runtime_config(self) -> dict:
         """加载运行时配置"""

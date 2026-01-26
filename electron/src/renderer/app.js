@@ -24,6 +24,7 @@ const timerFill = document.getElementById("timerFill");
 const chatPage = document.getElementById("chatPage");
 const promptsPage = document.getElementById("promptsPage");
 const messageMap = new Map();
+const pendingMessages = new Map();
 let polling = false;
 let uiBusy = false;
 const startupDeadline =
@@ -171,6 +172,64 @@ function parseToolArgs(toolCall) {
   }
 }
 
+function isTimeoutText(text) {
+  const normalized = String(text || "").toLowerCase();
+  return (
+    normalized.includes("timeout") ||
+    normalized.includes("timed out") ||
+    normalized.includes("readtimeout") ||
+    normalized.includes("etimedout")
+  );
+}
+
+function isTimeoutEvent(event) {
+  if (!event) {
+    return false;
+  }
+  if (event.kind === "timeout") {
+    return true;
+  }
+  return isTimeoutText(event.content || "");
+}
+
+function attachRetryAction(bubble, messageId) {
+  if (!bubble || bubble.querySelector(".retry-btn")) {
+    return;
+  }
+  const actions = document.createElement("div");
+  actions.className = "message-actions";
+  const retryBtn = document.createElement("button");
+  retryBtn.type = "button";
+  retryBtn.className = "retry-btn";
+  retryBtn.textContent = "重试";
+  retryBtn.addEventListener("click", async () => {
+    if (uiBusy) {
+      return;
+    }
+    const entry = pendingMessages.get(messageId);
+    if (!entry) {
+      return;
+    }
+    bubble.classList.remove("error");
+    bubble.textContent = "";
+    setStatus("思考中...");
+    setUiBusy(true);
+    try {
+      await streamChat(entry.message, messageId);
+    } catch (err) {
+      const errText = String(err);
+      showError(messageId, errText);
+      if (isTimeoutText(errText)) {
+        attachRetryAction(bubble, messageId);
+      }
+      setStatus("未连接", false);
+      setUiBusy(false);
+    }
+  });
+  actions.appendChild(retryBtn);
+  bubble.appendChild(actions);
+}
+
 function handleStreamEvent(event, fallbackMessageId) {
   if (!event) {
     return;
@@ -189,7 +248,12 @@ function handleStreamEvent(event, fallbackMessageId) {
     return;
   }
   if (event.type === "error") {
-    showError(messageId, event.content || "未知错误");
+    const content = event.content || "未知错误";
+    showError(messageId, content);
+    if (isTimeoutEvent(event)) {
+      const bubble = ensureAssistantMessage(messageId);
+      attachRetryAction(bubble, messageId);
+    }
     setStatus("未连接", false);
     setUiBusy(false);
     return;
@@ -207,6 +271,10 @@ function handleStreamEvent(event, fallbackMessageId) {
     }
     setStatus("已连接");
     setUiBusy(false);
+    const bubble = messageMap.get(messageId);
+    if (bubble && !bubble.classList.contains("error")) {
+      pendingMessages.delete(messageId);
+    }
   }
 }
 
@@ -315,6 +383,7 @@ function formatDuration(seconds) {
 async function loadHistory() {
   const data = await apiFetch("/history");
   messageMap.clear();
+  pendingMessages.clear();
   messagesEl.innerHTML = "";
 
   data.items.forEach(item => {
@@ -428,6 +497,7 @@ async function sendMessage() {
     return;
   }
   const messageId = generateMessageId();
+  pendingMessages.set(messageId, { message });
   appendMessage("user", message);
   ensureAssistantMessage(messageId);
   messageInput.value = "";
@@ -441,7 +511,12 @@ async function sendMessage() {
   try {
     await streamChat(message, messageId);
   } catch (err) {
-    showError(messageId, String(err));
+    const errText = String(err);
+    showError(messageId, errText);
+    if (isTimeoutText(errText)) {
+      const bubble = ensureAssistantMessage(messageId);
+      attachRetryAction(bubble, messageId);
+    }
     setStatus("未连接", false);
     setUiBusy(false);
   }
@@ -452,13 +527,19 @@ async function sendNudge() {
     return;
   }
   const messageId = generateMessageId();
+  pendingMessages.set(messageId, { message: "" });
   ensureAssistantMessage(messageId);
   setStatus("思考中...");
   setUiBusy(true);
   try {
     await streamChat("", messageId);
   } catch (err) {
-    showError(messageId, String(err));
+    const errText = String(err);
+    showError(messageId, errText);
+    if (isTimeoutText(errText)) {
+      const bubble = ensureAssistantMessage(messageId);
+      attachRetryAction(bubble, messageId);
+    }
     setStatus("未连接", false);
     setUiBusy(false);
   }
@@ -496,6 +577,7 @@ async function savePrompts() {
 async function clearHistory() {
   await apiFetch("/history/clear", { method: "POST" });
   messageMap.clear();
+  pendingMessages.clear();
   messagesEl.innerHTML = "";
   await loadHistory();
   await loadScheduler();
