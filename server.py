@@ -118,8 +118,7 @@ class AgentService:
             return config
 
     def get_scheduler_status(self):
-        with self._lock:
-            return self._agent.scheduler.get_status()
+        return self._agent.scheduler.get_status()
 
     def list_documents(self):
         documents_dir = settings.documents_dir

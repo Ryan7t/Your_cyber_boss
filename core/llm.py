@@ -14,6 +14,7 @@ class LLMClient:
     def __init__(self, api_key: str, base_url: str, model: str, timeout_s: float = 120.0):
         self.model = model
         self.client = None
+        self.timeout_s = timeout_s
         
         if api_key:
             # 显式禁用代理，忽略系统环境变量中的代理配置 (HTTP_PROXY, HTTPS_PROXY 等)
@@ -52,6 +53,7 @@ class LLMClient:
             kwargs["tools"] = tools
         if tool_choice is not None:
             kwargs["tool_choice"] = tool_choice
+        kwargs["timeout"] = self.timeout_s
         return self.client.chat.completions.create(**kwargs)
 
     def chat_stream(self, messages: List[Dict], tools: Optional[List[Dict]] = None, tool_choice: Optional[str] = None) -> Generator[str, None, None]:
@@ -90,6 +92,7 @@ class LLMClient:
             kwargs["tools"] = tools
         if tool_choice is not None:
             kwargs["tool_choice"] = tool_choice
+        kwargs["timeout"] = self.timeout_s
         stream = self.client.chat.completions.create(**kwargs)
         for chunk in stream:
             yield chunk

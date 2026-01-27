@@ -25,20 +25,39 @@ const chatPage = document.getElementById("chatPage");
 const promptsPage = document.getElementById("promptsPage");
 const messageMap = new Map();
 const pendingMessages = new Map();
+const timedOutMessages = new Set();
+const DEFAULT_REQUEST_TIMEOUT_MS = Number(window.bossApi.requestTimeoutMs || 12000);
+const EVENTS_TIMEOUT_MS = Number(window.bossApi.eventsTimeoutMs || 8000);
+const STREAM_TIMEOUT_MS = Number(window.bossApi.streamTimeoutMs || 150000);
 let polling = false;
 let uiBusy = false;
 const startupDeadline =
   Date.now() + (Number(window.bossApi.startupTimeoutMs) || 30000);
 
-async function apiFetch(path, options = {}) {
-  const response = await fetch(`${apiBase}${path}`, {
+async function apiFetch(path, options = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+  const response = await fetchWithTimeout(`${apiBase}${path}`, {
     headers: { "Content-Type": "application/json" },
     ...options
-  });
+  }, timeoutMs);
   if (!response.ok) {
     throw new Error(`请求失败: ${response.status}`);
   }
   return response.json();
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (err && err.name === "AbortError") {
+      throw new Error("timeout");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 function setStatus(text, ok = true) {
@@ -172,6 +191,7 @@ function parseToolArgs(toolCall) {
   }
 }
 
+
 function isTimeoutText(text) {
   const normalized = String(text || "").toLowerCase();
   return (
@@ -210,6 +230,7 @@ function attachRetryAction(bubble, messageId) {
     if (!entry) {
       return;
     }
+    timedOutMessages.delete(messageId);
     bubble.classList.remove("error");
     bubble.textContent = "";
     setStatus("思考中...");
@@ -230,6 +251,16 @@ function attachRetryAction(bubble, messageId) {
   bubble.appendChild(actions);
 }
 
+function handleTimeout(messageId) {
+  const bubble = ensureAssistantMessage(messageId);
+  if (bubble) {
+    attachRetryAction(bubble, messageId);
+  }
+  timedOutMessages.add(messageId);
+  setUiBusy(false);
+  setStatus("已连接");
+}
+
 function handleStreamEvent(event, fallbackMessageId) {
   if (!event) {
     return;
@@ -248,12 +279,12 @@ function handleStreamEvent(event, fallbackMessageId) {
     return;
   }
   if (event.type === "error") {
+    if (isTimeoutEvent(event)) {
+      handleTimeout(messageId);
+      return;
+    }
     const content = event.content || "未知错误";
     showError(messageId, content);
-    if (isTimeoutEvent(event)) {
-      const bubble = ensureAssistantMessage(messageId);
-      attachRetryAction(bubble, messageId);
-    }
     setStatus("未连接", false);
     setUiBusy(false);
     return;
@@ -263,7 +294,7 @@ function handleStreamEvent(event, fallbackMessageId) {
     return;
   }
   if (event.type === "done") {
-    if (event.response) {
+    if (!timedOutMessages.has(messageId) && event.response) {
       const bubble = messageMap.get(messageId);
       if (bubble && !bubble.textContent) {
         replaceMessage(messageId, event.response);
@@ -272,58 +303,77 @@ function handleStreamEvent(event, fallbackMessageId) {
     setStatus("已连接");
     setUiBusy(false);
     const bubble = messageMap.get(messageId);
-    if (bubble && !bubble.classList.contains("error")) {
+    if (bubble && !bubble.classList.contains("error") && !timedOutMessages.has(messageId)) {
       pendingMessages.delete(messageId);
     }
+    timedOutMessages.delete(messageId);
   }
 }
 
 async function streamChat(message, messageId) {
-  const response = await fetch(`${apiBase}/chat/stream`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, message_id: messageId })
-  });
-  if (!response.ok) {
-    throw new Error(`请求失败: ${response.status}`);
-  }
-  if (!response.body) {
-    const data = await response.json();
-    handleStreamEvent({ type: "done", message_id: data.message_id || messageId, response: data.response }, messageId);
-    return;
-  }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8");
-  let buffer = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
-    }
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-    lines.forEach(line => {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        return;
-      }
-      try {
-        handleStreamEvent(JSON.parse(trimmed), messageId);
-      } catch (err) {
-        // ignore malformed fragments
-      }
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), STREAM_TIMEOUT_MS);
+  let reader = null;
+  try {
+    const response = await fetch(`${apiBase}/chat/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, message_id: messageId }),
+      signal: controller.signal
     });
-  }
-  if (buffer.trim()) {
-    try {
-      handleStreamEvent(JSON.parse(buffer.trim()), messageId);
-    } catch (err) {
-      // ignore trailing fragments
+    if (!response.ok) {
+      throw new Error(`请求失败: ${response.status}`);
     }
-  }
-  if (uiBusy) {
-    setUiBusy(false);
+    if (!response.body) {
+      const data = await response.json();
+      handleStreamEvent({ type: "done", message_id: data.message_id || messageId, response: data.response }, messageId);
+      return;
+    }
+    reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      lines.forEach(line => {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          return;
+        }
+        try {
+          handleStreamEvent(JSON.parse(trimmed), messageId);
+        } catch (err) {
+          // ignore malformed fragments
+        }
+      });
+    }
+    if (buffer.trim()) {
+      try {
+        handleStreamEvent(JSON.parse(buffer.trim()), messageId);
+      } catch (err) {
+        // ignore trailing fragments
+      }
+    }
+    if (uiBusy) {
+      setUiBusy(false);
+    }
+  } catch (err) {
+    if (err && err.name === "AbortError") {
+      throw new Error("timeout");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+    try {
+      reader?.cancel();
+    } catch (err) {
+      // ignore
+    }
   }
 }
 
@@ -384,6 +434,7 @@ async function loadHistory() {
   const data = await apiFetch("/history");
   messageMap.clear();
   pendingMessages.clear();
+  timedOutMessages.clear();
   messagesEl.innerHTML = "";
 
   data.items.forEach(item => {
@@ -512,11 +563,11 @@ async function sendMessage() {
     await streamChat(message, messageId);
   } catch (err) {
     const errText = String(err);
-    showError(messageId, errText);
     if (isTimeoutText(errText)) {
-      const bubble = ensureAssistantMessage(messageId);
-      attachRetryAction(bubble, messageId);
+      handleTimeout(messageId);
+      return;
     }
+    showError(messageId, errText);
     setStatus("未连接", false);
     setUiBusy(false);
   }
@@ -535,11 +586,11 @@ async function sendNudge() {
     await streamChat("", messageId);
   } catch (err) {
     const errText = String(err);
-    showError(messageId, errText);
     if (isTimeoutText(errText)) {
-      const bubble = ensureAssistantMessage(messageId);
-      attachRetryAction(bubble, messageId);
+      handleTimeout(messageId);
+      return;
     }
+    showError(messageId, errText);
     setStatus("未连接", false);
     setUiBusy(false);
   }
@@ -578,6 +629,7 @@ async function clearHistory() {
   await apiFetch("/history/clear", { method: "POST" });
   messageMap.clear();
   pendingMessages.clear();
+  timedOutMessages.clear();
   messagesEl.innerHTML = "";
   await loadHistory();
   await loadScheduler();
@@ -590,7 +642,7 @@ async function pollEvents() {
   }
   polling = true;
   try {
-    const data = await apiFetch("/events");
+    const data = await apiFetch("/events", {}, EVENTS_TIMEOUT_MS);
     if (Array.isArray(data.items)) {
       data.items.forEach(event => {
         if (!event) {
@@ -627,6 +679,12 @@ async function pollEvents() {
     }
     await loadScheduler();
   } catch (err) {
+    if (isTimeoutText(String(err))) {
+      if (isStartingUp()) {
+        setStatus("后端启动中...", true);
+      }
+      return;
+    }
     if (isStartingUp()) {
       setStatus("后端启动中...", true);
     } else {
