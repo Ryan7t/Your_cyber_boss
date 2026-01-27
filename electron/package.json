@@ -5,6 +5,8 @@
   "main": "src/main.js",
   "scripts": {
     "dev": "electron .",
+    "build:backend": "node scripts/build-backend.js",
+    "predist": "npm run build:backend",
     "pack": "electron-builder --dir",
     "dist": "electron-builder"
   },
@@ -15,6 +17,7 @@
   "build": {
     "appId": "com.boss.agent",
     "productName": "BossAgent",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "files": [
       "src/**"
     ],
