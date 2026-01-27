@@ -57,7 +57,18 @@ class AgentService:
         with self._lock:
             if self._agent.memory.is_empty():
                 self._agent.handle_startup()
-            return self._agent.memory.get_all()
+            items = self._agent.memory.get_all()
+            return [
+                {"record_index": index, **record}
+                for index, record in enumerate(items)
+            ]
+
+    def get_history_record(self, record_index: int) -> dict:
+        with self._lock:
+            items = self._agent.memory.get_all()
+            if record_index < 0 or record_index >= len(items):
+                return {}
+            return items[record_index]
 
     def chat(self, message: str, message_id: str = None) -> dict:
         message_id = message_id or str(uuid.uuid4())
@@ -68,13 +79,17 @@ class AgentService:
             self._push_event(event)
 
         with self._lock:
+            before = len(self._agent.memory.get_all())
             if message is None:
                 message = ""
             if not message.strip():
                 response = self._agent.handle_proactive_followup(event_callback=event_callback, message_id=message_id)
             else:
                 response = self._agent.handle_user_input(message, event_callback=event_callback, message_id=message_id)
-        return {"message_id": message_id, "response": response}
+            after = len(self._agent.memory.get_all())
+            saved = after > before
+        record_index = after - 1 if saved else None
+        return {"message_id": message_id, "response": response, "saved": saved, "record_index": record_index}
 
     def chat_stream(self, message: str, send_event, message_id: str = None) -> str:
         message_id = message_id or str(uuid.uuid4())
@@ -85,14 +100,71 @@ class AgentService:
             send_event(event)
 
         with self._lock:
+            before = len(self._agent.memory.get_all())
             if message is None:
                 message = ""
             if not message.strip():
                 response = self._agent.handle_proactive_followup(event_callback=event_callback, message_id=message_id)
             else:
                 response = self._agent.handle_user_input(message, event_callback=event_callback, message_id=message_id)
-        send_event({"type": "done", "message_id": message_id, "response": response})
+            after = len(self._agent.memory.get_all())
+            saved = after > before
+        record_index = after - 1 if saved else None
+        send_event({
+            "type": "done",
+            "message_id": message_id,
+            "response": response,
+            "saved": saved,
+            "record_index": record_index
+        })
         return message_id
+
+    def retry_record_stream(self, record_index: int, send_event, message_id: str = None):
+        message_id = message_id or str(uuid.uuid4())
+
+        def event_callback(event: dict):
+            if "message_id" not in event:
+                event["message_id"] = message_id
+            event["record_index"] = record_index
+            send_event(event)
+
+        with self._lock:
+            history = self._agent.memory.get_all()
+            if record_index < 0 or record_index >= len(history):
+                send_event({"type": "error", "content": "invalid_record", "message_id": message_id, "record_index": record_index})
+                return
+            request_input = history[record_index].get("request_input", "")
+            # 临时只使用重试前的历史
+            original_history = self._agent.memory.history
+            self._agent.memory.history = history[:record_index]
+            try:
+                response, conversation_messages, should_save = self._agent.generate_response(
+                    request_input,
+                    event_callback=event_callback,
+                    message_id=message_id
+                )
+            finally:
+                self._agent.memory.history = original_history
+            if should_save:
+                self._agent.memory.replace_record(record_index, conversation_messages, request_input=request_input)
+
+        send_event({
+            "type": "done",
+            "message_id": message_id,
+            "response": response,
+            "saved": should_save,
+            "record_index": record_index
+        })
+
+    def update_history_message(self, record_index: int, message_index: int, role: str, content: str) -> dict:
+        with self._lock:
+            updated = self._agent.memory.update_message(
+                record_index=record_index,
+                message_index=message_index,
+                role=role,
+                content=content
+            )
+            return {"ok": bool(updated)}
 
     def clear_history(self):
         with self._lock:
@@ -208,7 +280,8 @@ def make_handler(service: AgentService):
             self.end_headers()
 
         def do_GET(self):
-            path = urlparse(self.path).path
+            parsed = urlparse(self.path)
+            path = parsed.path
             if path == "/health":
                 self._send_json(200, {"status": "ok"})
                 return
@@ -217,6 +290,22 @@ def make_handler(service: AgentService):
                 return
             if path == "/history":
                 self._send_json(200, {"items": service.get_history()})
+                return
+            if path == "/history/record":
+                params = dict(part.split("=", 1) for part in parsed.query.split("&") if "=" in part)
+                if "index" not in params:
+                    self._send_json(400, {"error": "invalid_request"})
+                    return
+                try:
+                    index = int(params["index"])
+                except ValueError:
+                    self._send_json(400, {"error": "invalid_request"})
+                    return
+                record = service.get_history_record(index)
+                if not record:
+                    self._send_json(404, {"error": "not_found"})
+                    return
+                self._send_json(200, record)
                 return
             if path == "/events":
                 self._send_json(200, {"items": service.get_events()})
@@ -269,6 +358,37 @@ def make_handler(service: AgentService):
                 except Exception:
                     send_event({"type": "error", "content": traceback.format_exc()})
                 return
+            if path == "/history/retry/stream":
+                data = self._read_json()
+                record_index = data.get("record_index")
+                message_id = data.get("message_id")
+                if record_index is None:
+                    self._send_json(400, {"error": "invalid_request"})
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                self.end_headers()
+
+                def send_event(event: dict):
+                    try:
+                        payload = json.dumps(event, ensure_ascii=False).encode("utf-8") + b"\n"
+                        self.wfile.write(payload)
+                        self.wfile.flush()
+                    except BrokenPipeError:
+                        return
+                    except Exception:
+                        return
+
+                try:
+                    service.retry_record_stream(int(record_index), send_event=send_event, message_id=message_id)
+                except Exception:
+                    send_event({"type": "error", "content": traceback.format_exc()})
+                return
             if path == "/config":
                 data = self._read_json()
                 config = service.update_config(data)
@@ -282,6 +402,23 @@ def make_handler(service: AgentService):
             if path == "/history/clear":
                 service.clear_history()
                 self._send_json(200, {"ok": True})
+                return
+            if path == "/history/update":
+                data = self._read_json()
+                record_index = data.get("record_index")
+                message_index = data.get("message_index")
+                role = data.get("role")
+                content = data.get("content", "")
+                if record_index is None or role is None:
+                    self._send_json(400, {"error": "invalid_request"})
+                    return
+                result = service.update_history_message(
+                    record_index=int(record_index),
+                    message_index=None if message_index is None else int(message_index),
+                    role=str(role),
+                    content=str(content)
+                )
+                self._send_json(200, result)
                 return
             self._send_json(404, {"error": "not_found"})
 

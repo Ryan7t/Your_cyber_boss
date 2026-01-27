@@ -579,7 +579,7 @@ class BossAgent:
                 message_id=message_id
             )
             if should_save:
-                self.memory.add(conversation_messages)
+                self.memory.add(conversation_messages, request_input=init_input)
             return response
         return ""
     
@@ -597,7 +597,7 @@ class BossAgent:
             message_id=message_id
         )
         if should_save:
-            self.memory.add(conversation_messages)
+            self.memory.add(conversation_messages, request_input=proactive_input)
         return response
     
     def handle_auto_followup(
@@ -614,7 +614,7 @@ class BossAgent:
             message_id=message_id
         )
         if should_save:
-            self.memory.add(conversation_messages)
+            self.memory.add(conversation_messages, request_input=auto_input)
         return response
     
     def handle_user_input(
@@ -630,7 +630,7 @@ class BossAgent:
             message_id=message_id
         )
         if should_save:
-            self.memory.add(conversation_messages)
+            self.memory.add(conversation_messages, request_input=user_input)
         return response
     
     def run(self):

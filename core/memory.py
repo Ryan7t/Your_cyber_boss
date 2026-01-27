@@ -41,10 +41,11 @@ class Memory:
         except Exception as e:
             print(f"保存记忆文件失败: {e}")
     
-    def add(self, messages: List[Dict]):
+    def add(self, messages: List[Dict], request_input: str = ""):
         """添加一条对话记录（完整消息列表）"""
         self.history.append({
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "request_input": request_input or "",
             "messages": messages  # 保存完整消息列表（包括 user、assistant、tool_calls、tool）
         })
         self.save()
@@ -61,3 +62,47 @@ class Memory:
         """清空历史记录"""
         self.history = []
         self.save()
+
+    def update_message(
+        self,
+        record_index: int,
+        message_index: int = None,
+        role: str = None,
+        content: str = ""
+    ) -> bool:
+        """更新指定记录中的消息内容"""
+        if record_index is None:
+            return False
+        if record_index < 0 or record_index >= len(self.history):
+            return False
+        record = self.history[record_index]
+        messages = record.get("messages")
+        if not isinstance(messages, list):
+            return False
+        target_index = message_index
+        if target_index is None or target_index < 0 or target_index >= len(messages):
+            if role:
+                for idx in range(len(messages) - 1, -1, -1):
+                    msg = messages[idx]
+                    if msg.get("role") == role:
+                        target_index = idx
+                        break
+        if target_index is None or target_index < 0 or target_index >= len(messages):
+            return False
+        messages[target_index]["content"] = content
+        if role == "user" and target_index == 0:
+            record["request_input"] = content
+        self.save()
+        return True
+
+    def replace_record(self, record_index: int, messages: List[Dict], request_input: str = "") -> bool:
+        """用新的消息列表替换指定记录"""
+        if record_index < 0 or record_index >= len(self.history):
+            return False
+        self.history[record_index] = {
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "request_input": request_input or "",
+            "messages": messages
+        }
+        self.save()
+        return True

@@ -305,7 +305,6 @@ body.ui-busy select:disabled {
   position: relative;
   word-wrap: break-word;
   max-width: 100%;
-  white-space: pre-wrap;
 }
 
 .message-row.user .message-bubble {
@@ -313,6 +312,7 @@ body.ui-busy select:disabled {
   color: #ffffff;
   border-bottom-right-radius: 2px;
   box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
+  white-space: pre-wrap;
 }
 
 .message-row.assistant .message-bubble {
@@ -320,6 +320,7 @@ body.ui-busy select:disabled {
   color: var(--text-primary);
   border: 1px solid var(--border-subtle);
   border-bottom-left-radius: 2px;
+  white-space: normal;
 }
 
 .message-bubble.debug {
@@ -351,38 +352,45 @@ body.ui-busy select:disabled {
   color: #ef4444;
 }
 
-.message-actions {
-  margin-top: 8px;
-  display: flex;
-  gap: 8px;
+.context-menu {
+  position: fixed;
+  background: var(--bg-element);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  z-index: 1000;
 }
 
-.retry-btn {
+.context-menu.visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.context-menu-btn {
   background: transparent;
   border: 1px solid var(--border-subtle);
-  color: var(--text-secondary);
+  color: var(--text-primary);
   border-radius: 6px;
-  padding: 4px 10px;
+  padding: 6px 12px;
   font-size: 12px;
   cursor: pointer;
   transition: all 0.2s ease;
+  display: block;
+  width: 100%;
+  text-align: left;
 }
 
-.retry-btn:hover {
+.context-menu-btn:hover {
   background: var(--bg-element-hover);
   border-color: var(--text-secondary);
-  color: var(--text-primary);
 }
 
-.message-bubble.error .retry-btn {
-  border-color: rgba(239, 68, 68, 0.7);
-  color: #ef4444;
-}
-
-.message-bubble.error .retry-btn:hover {
-  background: rgba(239, 68, 68, 0.1);
-  border-color: #ef4444;
-}
 
 /* Composer Area */
 .composer-container {
